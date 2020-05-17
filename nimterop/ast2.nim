@@ -1475,6 +1475,97 @@ proc addProcVar(gState: State, node, rnode: TSNode, commentNodes: seq[TSNode]) =
 
     gState.printDebug(identDefs)
 
+proc addDynlibProc(gState: State, node, rnode: TSNode, commentNodes: seq[TSNode]) =
+  # Add a proc
+  #
+  # `node` is the `nth` child of (declaration)
+  # `rnode` is the return value node, the first child of (declaration)
+  decho("addDynlibProc()")
+  let
+    # node = identifier = name
+    ident = gState.newXIdent(node, kind = nskProc)
+
+  if not ident.isNil:
+    let
+      # Only need the ident tree, not nkTypeDef parent
+      name = ident.getIdentName()
+      origname = gState.getNodeVal(node.getAtom())
+
+      # node could have nested pointers
+      tcount = node.getPtrCount()
+
+      # rnode = identifier = return type name
+      (rname, _, rinfo) = gState.getNameInfo(rnode.getAtom(), nskType, parent = name)
+
+      # Parameter list
+      plist = node.anyChildInTree("parameter_list")
+
+      procTy = newNode(nkProcTy)
+
+    # proc(a: X, b: Y): Z {.gcsafe, cdecl.}
+    # ProcTy
+    #   FormalParams
+    #     Ident "Z"
+    #     IdentDefs
+    #       Ident "a"
+    #       Ident "X"
+    #       Empty
+    #     IdentDefs
+    #       Ident "b"
+    #       Ident "Y"
+    #       Empty
+    #   Pragma
+    #     Ident "gcsafe"
+    #     Ident "cdecl"
+
+    # Return type
+    var
+      retType =
+        if rname == "object" and tcount == 0:
+          # void func(..)
+          newNode(nkEmpty)
+        else:
+          gState.getIdent(rname, rinfo, exported = false)
+    if tcount > 0:
+      retType = gState.newPtrTree(tcount, retType)
+
+    # Proc with return type and params
+    procTy.add gState.newFormalParams(name, plist, retType)
+
+    # Pragmas
+    let
+      prident = gState.newPragma(node, "gcsafe")
+
+      # Detect ... and add {.varargs.}
+      pvarargs = plist.getVarargs()
+
+    # Need {.convention.}
+    gState.addPragma(node, prident, gState.convention)
+
+    if pvarargs:
+      # Add {.varargs.} for ...
+      gState.addPragma(node, prident, "varargs")
+
+    procTy.add prident
+    procTy.add newNode(nkEmpty)
+    procTy.add newNode(nkEmpty)
+
+    # generateDynlibProcs(libraryGetVersion, ProcTy)
+    #   Call
+    #     Ident "generateDynlibProcs"
+    #     Ident "libraryGetVersion"
+    #     ProcTy
+
+    let c = newNode(nkCall)
+    c.add gState.getIdent("generateDynlibProcs")
+    c.add gState.getIdent(ident.getIdentName())
+    c.add procTy
+
+    # nkProcSection.add
+    gState.procSection.add(c)
+
+    gState.printDebug(procTy)
+
 proc addProc(gState: State, node, rnode: TSNode, commentNodes: seq[TSNode]) =
   # Add a proc
   #
@@ -1619,7 +1710,7 @@ proc addDecl(gState: State, node: TSNode) =
           firstDecl = false
         else:
           commentNodes = gState.getCommentNodes(node[i])
-        gState.addProc(node[i], node[start], commentNodes)
+        gState.addDynlibProc(node[i], node[start], commentNodes)
     else:
       # Regular var
       discard
@@ -1638,7 +1729,7 @@ proc addDef(gState: State, node: TSNode) =
 
   if node[start+1].getName() == "function_declarator":
     if not gState.noHeader:
-      gState.addProc(node[start+1], node[start], commentNodes)
+      gState.addDynlibProc(node[start+1], node[start], commentNodes)
     else:
       gecho &"\n# proc '$1' skipped - static inline procs cannot work with '--noHeader | -H'" %
         gState.getNodeVal(node[start+1].getAtom())
@@ -1782,6 +1873,7 @@ proc printNim*(gState: State) =
   # Create output to Nim using Nim compiler renderer
   var
     tree = newNode(nkStmtList)
+
   tree.add gState.pragmaSection
   tree.add gState.enumSection
   tree.add gState.constSection

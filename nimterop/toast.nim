@@ -35,7 +35,7 @@ proc main(
     debug = false,
     defines: seq[string] = @[],
     dynlib: string = "",
-    feature: seq[Feature] = @[Feature.ast1],
+    feature: seq[Feature] = @[Feature.ast2],
     includeDirs: seq[string] = @[],
     mode = "",
     nim: string = "nim",
